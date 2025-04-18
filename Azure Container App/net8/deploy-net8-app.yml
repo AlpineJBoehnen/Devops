@@ -1,0 +1,100 @@
+# This workflow builds and pushes a Docker container to Azure Web App when a commit
+# is pushed to a branch matching "deploy" or triggered manually via workflow_dispatch.
+#
+# Prerequisites:
+# 1. You have created the target Azure Web App and downloaded its Publish Profile.
+# 2. You have set the AZURE_WEBAPP_PUBLISH_PROFILE secret to the contents of that file.
+# 3. You have set the AZURE_ARTIFACTS_PAT secret.
+# 4. You have a Classic GitHub PAT with "repo" and "read:packages" permissions, and created
+#    three app settings (DOCKER_REGISTRY_SERVER_URL, DOCKER_REGISTRY_SERVER_USERNAME, DOCKER_REGISTRY_SERVER_PASSWORD) on your Azure
+#    Web App, pointing to "https://ghcr.io", your username/org, and the PAT respectively.
+# 5. You have ensured that the correct AZURE_WEBAPP_NAME is specified in this yml.
+
+name: Containerize and Deploy to Azure Web App
+
+on:
+  push:
+    branches:
+      - deploy
+  workflow_dispatch:
+
+env:
+  AZURE_WEBAPP_NAME: alpine-support  # Set this to the name of your Azure Web App
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  containerize:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Configure NuGet for Azure Artifacts
+        run: |
+          dotnet nuget add source "https://pkgs.dev.azure.com/alpinelis/AlpineFrameworks/_packaging/AlpineFrameworks/nuget/v3/index.json" \
+            --name "AlpineFrameworks" \
+            --username "github-actions" \
+            --password "${{ secrets.AZURE_ARTIFACTS_PAT }}" \
+            --store-password-in-clear-text
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --configuration Release --no-restore
+
+      - name: Test
+        run: dotnet test --configuration Release --no-build
+
+      - name: Publish
+        run: dotnet publish --configuration Release --no-build -o publish_folder
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Lowercase the repo name and username
+        run: echo "REPO=${GITHUB_REPOSITORY,,}" >>${GITHUB_ENV}
+
+      - name: Build and push container image to registry
+        uses: docker/build-push-action@v5
+        with:
+          push: true
+          context: .
+          file: ./Dockerfile
+          tags: ghcr.io/${{ env.REPO }}:${{ github.sha }}
+
+  deploy_to_azure:
+    runs-on: ubuntu-latest
+    needs: containerize
+    environment:
+      name: 'Development'
+      url: ${{ steps.deploy-to-webapp.outputs.webapp-url }}
+    permissions:
+      contents: none
+
+    steps:
+      - name: Lowercase the repo name and username
+        run: echo "REPO=${GITHUB_REPOSITORY,,}" >>${GITHUB_ENV}
+    
+      - name: Deploy to Azure Web App
+        id: deploy-to-webapp
+        uses: azure/webapps-deploy@v2
+        with:
+          app-name: ${{ env.AZURE_WEBAPP_NAME }}
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          images: ghcr.io/${{ env.REPO }}:${{ github.sha }}
