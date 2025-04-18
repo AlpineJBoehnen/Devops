@@ -9,7 +9,7 @@ name: Build & Publish Contracts
 on:
   push:
     branches:
-      - deploy**
+      - deploy
 
 jobs:
   build-and-publish:

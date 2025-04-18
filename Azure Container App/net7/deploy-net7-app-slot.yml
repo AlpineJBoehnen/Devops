@@ -16,7 +16,7 @@ name: Containerize and Deploy to Azure Web App
 on:
   push:
     branches:
-      - deploy**
+      - deploy
   workflow_dispatch:
 
 env:
